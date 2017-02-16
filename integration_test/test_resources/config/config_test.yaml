@@ -3,14 +3,12 @@ client:
   peer1:
     host: "localhost"
     port: 7051
-    event_host: "event_host1"
-    event_port: 2
+    event_host: "localhost"
+    event_port: 7053
 
   peer2:
     host: "localhost"
     port: 7056
-    event_host: "event_host2"
-    event_port: 4
 
  tls:
   enabled: false
