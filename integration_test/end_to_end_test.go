@@ -45,8 +45,21 @@ var chainId = "testchainid"
 
 func TestChainCodeInvoke(t *testing.T) {
 	InitConfigForEndToEnd()
+
 	eventHub := events.NewEventHub()
-	eventHub.SetPeerAddr("localhost:7053")
+	foundEventHub := false
+	for _, p := range config.GetPeersConfig() {
+		if p.EventHost != "" && p.EventPort != "" {
+			eventHub.SetPeerAddr(fmt.Sprintf("%s:%s", p.EventHost, p.EventPort))
+			foundEventHub = true
+			break
+		}
+	}
+
+	if !foundEventHub {
+		t.Fatalf("No EventHub configuration found")
+	}
+
 	if err := eventHub.Connect(); err != nil {
 		t.Fatalf("Failed eventHub.Connect() [%s]", err)
 	}
