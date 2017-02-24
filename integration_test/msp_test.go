@@ -58,7 +58,7 @@ func TestEnroll(t *testing.T) {
 	}
 	client.SetStateStore(stateStore)
 
-	msps, err := msp.NewMSPServices(config.GetMspURL(), config.GetMspClientPath())
+	msps, err := msp.NewMSPServices(config.GetMspClientPath())
 	if err != nil {
 		t.Fatalf("NewMSPServices return error: %v", err)
 	}

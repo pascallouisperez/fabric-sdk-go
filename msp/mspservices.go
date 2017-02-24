@@ -37,14 +37,13 @@ type Services struct {
 
 // NewMSPServices ...
 /**
- * @param {string} url The endpoint URL for msp services of the form: "http://host:port" or "https://host:port"
+ * @param {string} clientConfigFile for msp services"
  */
-func NewMSPServices(url string, clientConfigFile string) (*Services, error) {
-	if url == "" {
-		return nil, fmt.Errorf("Failed to create MSPServices. Missing requirement 'url' parameter.")
+func NewMSPServices(clientConfigFile string) (*Services, error) {
+	if clientConfigFile == "" {
+		return nil, fmt.Errorf("Failed to create MSPServices. Missing requirement 'clientConfigFile' parameter.")
 	}
-	mspServer := fmt.Sprintf(`{"serverURL":"%s","homeDir":"%s"}`, url, clientConfigFile)
-	c, err := msp.NewClient(mspServer)
+	c, err := msp.NewClient(clientConfigFile)
 	if err != nil {
 		return nil, fmt.Errorf("New mspClient failed: %s", err)
 	}

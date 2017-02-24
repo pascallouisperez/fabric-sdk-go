@@ -24,7 +24,7 @@ import (
 )
 
 func TestEnrollWithMissingParameters(t *testing.T) {
-	msps, err := NewMSPServices("localhost", "/")
+	msps, err := NewMSPServices("/test.json")
 	if err != nil {
 		t.Fatalf("NewMSPServices return error: %v", err)
 	}

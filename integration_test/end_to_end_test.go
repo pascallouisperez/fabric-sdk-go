@@ -85,7 +85,7 @@ func TestChainCodeInvoke(t *testing.T) {
 		t.Fatalf("client.GetUserContext return error: %v", err)
 	}
 	if user == nil {
-		msps, err1 := msp.NewMSPServices(config.GetMspURL(), config.GetMspClientPath())
+		msps, err1 := msp.NewMSPServices(config.GetMspClientPath())
 		if err1 != nil {
 			t.Fatalf("NewFabricCOPServices return error: %v", err)
 		}

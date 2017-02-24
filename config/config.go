@@ -169,11 +169,6 @@ func GetOrdererHost() string {
 	return viper.GetString("client.orderer.host")
 }
 
-// GetMspURL ...
-func GetMspURL() string {
-	return viper.GetString("client.msp.url")
-}
-
 // GetMspID ...
 func GetMspID() string {
 	return viper.GetString("client.msp.id")
