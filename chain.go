@@ -25,6 +25,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/core/crypto/primitives"
 	msp "github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -282,10 +283,10 @@ func (c *Chain) CreateTransactionProposal(chaincodeName string, chainID string, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("GetUserContext return error: %s", err)
 	}
-	serializedIdentity := &msp.SerializedIdentity{Mspid: config.GetMspID(), IdBytes: user.GetEnrollmentCertificate()}
-	creatorID, err := proto.Marshal(serializedIdentity)
+
+	creatorID, err := getSerializedIdentity(user.GetEnrollmentCertificate())
 	if err != nil {
-		return nil, nil, fmt.Errorf("Could not Marshal serializedIdentity, err %s", err)
+		return nil, nil, err
 	}
 	// create a proposal from a ChaincodeInvocationSpec
 	proposal, err := protos_utils.CreateChaincodeProposalWithTransient(txid, common.HeaderType_ENDORSER_TRANSACTION, chainID, ccis, creatorID, transientData)
@@ -297,13 +298,9 @@ func (c *Chain) CreateTransactionProposal(chaincodeName string, chainID string, 
 	if err != nil {
 		return nil, nil, err
 	}
-	cryptoSuite := c.clientContext.GetCryptoSuite()
-	digest, err := cryptoSuite.Hash(proposalBytes, &bccsp.SHAOpts{})
-	if err != nil {
-		return nil, nil, err
-	}
-	signature, err := cryptoSuite.Sign(user.GetPrivateKey(),
-		digest, nil)
+
+	signature, err := c.signObjectWithKey(proposalBytes, user.GetPrivateKey(),
+		&bccsp.SHAOpts{}, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -346,6 +343,94 @@ func (c *Chain) SendTransactionProposal(signedProposal *pb.SignedProposal, retry
 	}
 	wg.Wait()
 	return transactionProposalResponseMap, nil
+}
+
+// CreateInvocationTransaction creates an invocation tranasaction that is broadcast
+// to the ordering service. Its payload contains a signed proposal which is
+// forwarded to the endorser server on the node to invoke chaincode
+// arguments: It takes the arguments required to create a transaction proposal
+// returns: transac envelope, error
+func (c *Chain) CreateInvocationTransaction(chaincodeName string, chainID string,
+	args []string, txid string, transientData []byte) (*common.Envelope, error) {
+	// Get user info and creator id
+	user, err := c.clientContext.GetUserContext("")
+	if err != nil {
+		return nil, fmt.Errorf("GetUserContext returned error: %s", err)
+	}
+
+	creatorID, err := getSerializedIdentity(user.GetEnrollmentCertificate())
+	if err != nil {
+		return nil, err
+	}
+
+	// Create and marshal signed transaction proposal
+	signedProposal, _, err := c.CreateTransactionProposal(chaincodeName,
+		chainID, args, true, txid, transientData)
+	if err != nil {
+		return nil, err
+	}
+	signedProposalBytes, err := proto.Marshal(signedProposal)
+	if err != nil {
+		return nil, err
+	}
+
+	// generate a random nonce
+	nonce, err := primitives.GetRandomNonce()
+	if err != nil {
+		return nil, err
+	}
+	// TODO: Change this header type once protobufs are merged into fabric
+	header := &common.Header{ChainHeader: &common.ChainHeader{Type: 6,
+		TxID:    txid,
+		ChainID: chainID},
+		SignatureHeader: &common.SignatureHeader{Nonce: nonce, Creator: creatorID}}
+
+	payload := &common.Payload{
+		Header: header,
+		Data:   signedProposalBytes,
+	}
+	payloadBytes, err := proto.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sign payload
+	signature, err := c.signObjectWithKey(payloadBytes,
+		user.GetPrivateKey(), &bccsp.SHAOpts{}, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	envelope := &common.Envelope{
+		Signature: signature,
+		Payload:   payloadBytes,
+	}
+
+	return envelope, nil
+}
+
+// SendInvocationTransaction broadcasts an invocation transaction through the
+// ordering service. Transaction Invocation Listener System Chaincode(TILSCC)
+// must be deployed on the peer to understand this transaction
+// arguments: tranasaction
+// returns: error
+func (c *Chain) SendInvocationTransaction(envelope *common.Envelope) error {
+	var failureCount int
+	transactionResponseMap, err := c.broadcastEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+	for URL, resp := range transactionResponseMap {
+		if resp.Err != nil {
+			logger.Warningf("Could not broadcast to orderer: %s", URL)
+			failureCount++
+		}
+	}
+	// If all orderers returned error, the operation failed
+	if failureCount == len(transactionResponseMap) {
+		return fmt.Errorf("Broadcast failed: Received error from all configured orderers")
+	}
+	return nil
 }
 
 // CreateTransaction ...
@@ -477,44 +562,92 @@ func (c *Chain) SendTransaction(proposal *pb.Proposal, tx *pb.Transaction) (map[
 		return nil, err
 	}
 
-	cryptoSuite := c.clientContext.GetCryptoSuite()
-	digest, err := cryptoSuite.Hash(paylBytes, &bccsp.SHAOpts{})
-	if err != nil {
-		return nil, err
-	}
+	//Get user info
 	user, err := c.clientContext.GetUserContext("")
 	if err != nil {
 		return nil, fmt.Errorf("GetUserContext return error: %s\n", err)
 	}
-	signature, err := cryptoSuite.Sign(user.GetPrivateKey(),
-		digest, nil)
+
+	// sign payload
+	signature, err := c.signObjectWithKey(paylBytes, user.GetPrivateKey(),
+		&bccsp.SHAOpts{}, nil)
 	if err != nil {
 		return nil, err
 	}
 	// here's the envelope
 	envelope := &common.Envelope{Payload: paylBytes, Signature: signature}
 
+	transactionResponseMap, err := c.broadcastEnvelope(envelope)
+	if err != nil {
+		return nil, err
+	}
+
+	return transactionResponseMap, nil
+}
+
+//broadcastEnvelope will send the given envelope to each orderer
+func (c *Chain) broadcastEnvelope(envelope *common.
+	Envelope) (map[string]*TransactionResponse, error) {
+	// Check if orderers are defined
+	if c.orderers == nil || len(c.orderers) == 0 {
+		return nil, fmt.Errorf("orderers not set")
+	}
+
 	transactionResponseMap := make(map[string]*TransactionResponse)
 	var wg sync.WaitGroup
 	for _, o := range c.orderers {
 		wg.Add(1)
-		go func(orderer *Orderer, wg *sync.WaitGroup, trm map[string]*TransactionResponse) {
-			defer wg.Done()
-			var err error
-			var transactionResponse *TransactionResponse
-
-			logger.Debugf("Send TransactionRequest to orderer :%s\n", orderer.GetURL())
-			if err = orderer.SendBroadcast(envelope); err != nil {
-				logger.Debugf("Receive Error Response from orderer :%v\n", err)
-				transactionResponse = &TransactionResponse{orderer.GetURL(), fmt.Errorf("Error calling endorser '%s':  %s", orderer.GetURL(), err)}
-			} else {
-				logger.Debugf("Receive Success Response from orderer\n")
-				transactionResponse = &TransactionResponse{orderer.GetURL(), nil}
-			}
-			trm[transactionResponse.Orderer] = transactionResponse
-		}(o, &wg, transactionResponseMap)
+		go collectBroadcastResponses(o, &wg, transactionResponseMap, envelope)
 	}
 	wg.Wait()
-	return transactionResponseMap, nil
 
+	return transactionResponseMap, nil
+}
+
+// signObjectWithKey will sign the given object with the given key,
+// hashOpts and signerOpts
+func (c *Chain) signObjectWithKey(object []byte, key bccsp.Key,
+	hashOpts bccsp.HashOpts, signerOpts bccsp.SignerOpts) ([]byte, error) {
+	cryptoSuite := c.clientContext.GetCryptoSuite()
+	digest, err := cryptoSuite.Hash(object, hashOpts)
+	if err != nil {
+		return nil, err
+	}
+	signature, err := cryptoSuite.Sign(key, digest, signerOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	return signature, nil
+}
+
+// collectBroadcastResponses will make the broadcast RPC call and place the
+// response in the given <URL string, response> map. It will add a nil
+// if an error is encountered
+func collectBroadcastResponses(orderer *Orderer, wg *sync.WaitGroup,
+	trm map[string]*TransactionResponse, envelope *common.Envelope) {
+	defer wg.Done()
+	var err error
+	var transactionResponse *TransactionResponse
+
+	logger.Debugf("Broadcasting envelope to orderer :%s\n", orderer.GetURL())
+	if err = orderer.SendBroadcast(envelope); err != nil {
+		logger.Debugf("Receive Error Response from orderer :%v\n", err)
+		transactionResponse = &TransactionResponse{orderer.GetURL(),
+			fmt.Errorf("Error calling orderer '%s':  %s", orderer.GetURL(), err)}
+	} else {
+		logger.Debugf("Receive Success Response from orderer\n")
+		transactionResponse = &TransactionResponse{orderer.GetURL(), nil}
+	}
+	trm[transactionResponse.Orderer] = transactionResponse
+}
+
+func getSerializedIdentity(userCertificate []byte) ([]byte, error) {
+	serializedIdentity := &msp.SerializedIdentity{Mspid: config.GetMspID(),
+		IdBytes: userCertificate}
+	creatorID, err := proto.Marshal(serializedIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("Could not Marshal serializedIdentity, err %s", err)
+	}
+	return creatorID, nil
 }

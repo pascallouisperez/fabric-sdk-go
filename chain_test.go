@@ -20,8 +20,51 @@ limitations under the License.
 package fabricsdk
 
 import (
+	"fmt"
+	"net"
 	"testing"
+
+	"google.golang.org/grpc"
+
+	"github.com/golang/protobuf/proto"
+	mocks "github.com/hyperledger/fabric-sdk-go/mocks"
+	cb "github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protos/orderer"
+	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/spf13/viper"
 )
+
+var testPayload = &cb.Envelope{
+	Payload: []byte("test payload"),
+}
+var testAddress = "0.0.0.0:19875"
+
+type MockBroadcastServer struct {
+	test *testing.T
+	srv  orderer.AtomicBroadcast_DeliverServer
+}
+
+func (m *MockBroadcastServer) Broadcast(server orderer.AtomicBroadcast_BroadcastServer) error {
+	req, err := server.Recv()
+	if err != nil {
+		m.test.Fatalf("Error at ordering service: %s", err)
+	}
+	if string(req.Payload) != "test payload" {
+		server.Send(&orderer.BroadcastResponse{
+			Status: cb.Status_BAD_REQUEST,
+		})
+	} else {
+		server.Send(&orderer.BroadcastResponse{
+			Status: cb.Status_SUCCESS,
+		})
+	}
+	return nil
+}
+
+func (m *MockBroadcastServer) Deliver(server orderer.AtomicBroadcast_DeliverServer) error {
+	// Not implemented
+	return nil
+}
 
 func TestChainMethods(t *testing.T) {
 	client := NewClient()
@@ -49,4 +92,93 @@ func TestChainMethods(t *testing.T) {
 		t.Fatalf("NewChain didn't return right error")
 	}
 
+}
+
+func TestCreateInvocationTransaction(t *testing.T) {
+	chain, err := setupTestChain()
+	if err != nil {
+		t.Fatalf("Failed to create chain: %s", err)
+	}
+	envelope, err := chain.CreateInvocationTransaction("testChaincode",
+		"testChain", []string{"test"}, "123", nil)
+	if err != nil {
+		t.Fatalf("Got unexpected error from CreateInvocationTransaction: %s", err)
+	}
+	if string(envelope.Signature) != "testSignature" {
+		t.Fatalf("InvocationTransaction had wrong signature")
+	}
+	// Unmarshal payload
+	payload := &cb.Payload{}
+	if err := proto.Unmarshal(envelope.Payload, payload); err != nil {
+		t.Fatalf("Invalid payload")
+	}
+	// Unmarshal proposal
+	proposal := &pb.SignedProposal{}
+	if err := proto.Unmarshal(payload.Data, proposal); err != nil {
+		t.Fatalf("Invalid proposal")
+	}
+	// Verify header type
+	// TODO: Change header type once protobuf changes are merged in
+	if payload.Header.GetChainHeader().Type != 6 {
+		t.Fatalf("Invalid header type")
+	}
+}
+
+func TestSendInvocationTransaction(t *testing.T) {
+	viper.Set("client.tls.enabled", false)
+	startMockServer(t)
+	chain, err := setupTestChain()
+	if err != nil {
+		t.Fatalf("Failed to create chain: %s", err)
+	}
+
+	orderer := CreateNewOrderer(testAddress)
+	chain.AddOrderer(orderer)
+	// Test happy flow
+	err = chain.SendInvocationTransaction(testPayload)
+	if err != nil {
+		t.Fatalf("SendInvocationTransaction return error: %s", err)
+	}
+	// test with invalid payload
+	testPayload = &cb.Envelope{
+		Payload: []byte("test invalid payload"),
+	}
+	err = chain.SendInvocationTransaction(testPayload)
+	if err.Error() != "Broadcast failed: Received error from all configured orderers" {
+		t.Fatalf("Expected invocation transaction broadcast to fail with invalid payload")
+	}
+	// test with no orderer
+	chain.RemoveOrderer(orderer)
+	err = chain.SendInvocationTransaction(testPayload)
+	if err == nil {
+		t.Fatalf("Expected error with no orderer configured")
+	}
+	// test with invalid orderer configuration
+	chain.AddOrderer(CreateNewOrderer("0.0.0.0:29675"))
+	if err == nil {
+		t.Fatalf("Expected error with invalid orderer configured")
+	}
+}
+
+func startMockServer(t *testing.T) {
+	grpcServer := grpc.NewServer()
+	lis, err := net.Listen("tcp", testAddress)
+	broadcastServer := &MockBroadcastServer{
+		test: t,
+	}
+	orderer.RegisterAtomicBroadcastServer(grpcServer, broadcastServer)
+	if err != nil {
+		t.Fatalf("Error starting test server %s", err)
+	}
+	fmt.Printf("Starting test server\n")
+	go grpcServer.Serve(lis)
+}
+
+func setupTestChain() (*Chain, error) {
+	client := NewClient()
+	user := NewUser("test")
+	cryptoSuite := &mocks.MockCryptoSuite{}
+	client.SetUserContext(user, true)
+	client.SetCryptoSuite(cryptoSuite)
+	return NewChain("testChain", client)
 }
