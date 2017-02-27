@@ -45,6 +45,8 @@ type EventHub struct {
 	client *consumer.EventsClient
 	// fabric connection state of this eventhub
 	connected bool
+	// List of events client is interested in
+	interestedEvents []*pb.Interest
 }
 
 // ChainCodeCBE ...
@@ -67,7 +69,10 @@ func NewEventHub() *EventHub {
 	blockRegistrants := make([]func(*common.Block, string, string), 0)
 	txRegistrants := make(map[string]func(string, error))
 
-	eventHub := &EventHub{chaincodeRegistrants: chaincodeRegistrants, blockRegistrants: blockRegistrants, txRegistrants: txRegistrants}
+	// default interested events
+	interestedEvents := []*pb.Interest{{EventType: pb.EventType_BLOCK}, {EventType: pb.EventType_REJECTION}}
+
+	eventHub := &EventHub{chaincodeRegistrants: chaincodeRegistrants, blockRegistrants: blockRegistrants, txRegistrants: txRegistrants, interestedEvents: interestedEvents}
 
 	return eventHub
 }
@@ -115,9 +120,14 @@ func (eventHub *EventHub) Connect() error {
 	return nil
 }
 
+//SetInterestedEvents set events that client is interested in
+func (eventHub *EventHub) SetInterestedEvents(events []*pb.Interest) {
+	eventHub.interestedEvents = events
+}
+
 //GetInterestedEvents implements consumer.EventAdapter interface for registering interested events
 func (eventHub *EventHub) GetInterestedEvents() ([]*pb.Interest, error) {
-	return []*pb.Interest{{EventType: pb.EventType_BLOCK}, {EventType: pb.EventType_REJECTION}}, nil
+	return eventHub.interestedEvents, nil
 }
 
 //Recv implements consumer.EventAdapter interface for receiving events
@@ -128,6 +138,24 @@ func (eventHub *EventHub) Recv(msg *pb.Event) (bool, error) {
 		logger.Debugf("Recv blockEvent:%v\n", blockEvent)
 		for _, v := range eventHub.blockRegistrants {
 			v(blockEvent.Block, "", "")
+		}
+		return true, nil
+	case *pb.Event_ChaincodeEvent:
+		ccEvent := msg.Event.(*pb.Event_ChaincodeEvent)
+		logger.Debugf("Recv ccEvent:%v\n", ccEvent)
+
+		cbeArray := eventHub.chaincodeRegistrants[ccEvent.ChaincodeEvent.ChaincodeID]
+		if len(cbeArray) <= 0 {
+			logger.Debugf("No event registration for ccid %s \n", ccEvent.ChaincodeEvent.ChaincodeID)
+		}
+
+		for _, v := range cbeArray {
+			if v.EventNameFilter == ccEvent.ChaincodeEvent.EventName {
+				callback := v.CallbackFunc
+				if callback != nil {
+					callback(ccEvent.ChaincodeEvent)
+				}
+			}
 		}
 		return true, nil
 	case *pb.Event_Rejection:

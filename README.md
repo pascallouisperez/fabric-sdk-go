@@ -13,6 +13,7 @@ Execute `go test` from the project root to build the library and run the basic h
 Execute `go test` in the `integration_test` to run end-to-end tests. This requires you to have:
 - A working fabric set up. Refer to the Hyperledger Fabric [documentation](https://github.com/hyperledger/fabric) on how to do this.
 - The `example_cc` chaincode from the Node.js SDK deployed. Refer to the fabric-sdk-node [documentation](https://github.com/hyperledger/fabric-sdk-node) on how to install it and run the `end-to-end.js` which deploys the `example_cc`
+- Light Chaincode Event(LCE) system chaincode 'lcescc' has to be deployed and enabled in order to run end-to-end LCE test in lce_test.go
 - Customized settings in the `integration_test/test_resources/config/config_test.yaml` in case your Hyperledger Fabric network is not running on `localhost` or is using different ports.
 
 ## Work in Progress
