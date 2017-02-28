@@ -197,17 +197,17 @@ func GetChains(t *testing.T) (*fabric_sdk.Chain, *fabric_sdk.Chain) {
 	if user == nil {
 		msps, err1 := msp.NewMSPServices(config.GetMspClientPath())
 		if err1 != nil {
-			t.Fatalf("NewFabricCOPServices return error: %v", err)
+			t.Fatalf("NewFabricCOPServices return error: %v", err1)
 		}
 		key, cert, err1 := msps.Enroll("testUser", "user1")
 		keyPem, _ := pem.Decode(key)
 		if err1 != nil {
-			t.Fatalf("Enroll return error: %v", err)
+			t.Fatalf("Enroll return error: %v", err1)
 		}
 		user := fabric_sdk.NewUser("testUser")
 		k, err1 := client.GetCryptoSuite().KeyImport(keyPem.Bytes, &bccsp.ECDSAPrivateKeyImportOpts{Temporary: false})
 		if err1 != nil {
-			t.Fatalf("KeyImport return error: %v", err)
+			t.Fatalf("KeyImport return error: %v", err1)
 		}
 		user.SetPrivateKey(k)
 		user.SetEnrollmentCertificate(cert)
